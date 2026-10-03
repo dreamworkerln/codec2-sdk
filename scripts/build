@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/common.sh"
+
+"$SDK_ROOT/scripts/fetch-upstream"
+
+platform="$(platform_id)"
+build_dir="$SDK_ROOT/build/${platform}-shared"
+dist_dir="$SDK_ROOT/dist/$platform"
+commit="$(lock_value commit)"
+version="$(lock_value version)"
+repo="$(lock_value repository)"
+
+rm -rf "$build_dir" "$dist_dir"
+mkdir -p "$build_dir" "$dist_dir"
+
+cmake \
+    -S "$UPSTREAM_DIR" \
+    -B "$build_dir" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_SHARED_LIBS=ON \
+    -DLPCNET=OFF \
+    -DUNITTEST=OFF \
+    -DCMAKE_INSTALL_PREFIX="$dist_dir"
+
+cmake --build "$build_dir" --parallel "$(parallel_jobs)" --target codec2 c2enc c2dec
+cmake --install "$build_dir"
+
+mkdir -p "$dist_dir/bin" "$dist_dir/libexec" "$dist_dir/licenses"
+for tool in c2enc c2dec; do
+    candidate="$build_dir/src/$tool"
+    if [[ ! -x "$candidate" ]]; then
+        echo "expected Codec2 tool was not built: $candidate" >&2
+        exit 2
+    fi
+    cp "$candidate" "$dist_dir/libexec/${tool}.bin"
+    cat > "$dist_dir/bin/$tool" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+sdk_dir="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ "\$(uname -s)" == "Darwin" ]]; then
+    export DYLD_LIBRARY_PATH="\$sdk_dir/lib\${DYLD_LIBRARY_PATH:+:\$DYLD_LIBRARY_PATH}"
+else
+    export LD_LIBRARY_PATH="\$sdk_dir/lib\${LD_LIBRARY_PATH:+:\$LD_LIBRARY_PATH}"
+fi
+exec "\$sdk_dir/libexec/${tool}.bin" "\$@"
+EOF
+    chmod +x "$dist_dir/bin/$tool"
+done
+cp "$UPSTREAM_DIR/COPYING" "$dist_dir/licenses/codec2-COPYING"
+
+python3 - "$dist_dir" "$platform" "$repo" "$commit" "$version" <<'PY'
+import json
+import os
+import pathlib
+import platform as py_platform
+import subprocess
+import sys
+from datetime import datetime, timezone
+
+out = pathlib.Path(sys.argv[1])
+platform_id = sys.argv[2]
+repo = sys.argv[3]
+commit = sys.argv[4]
+version = sys.argv[5]
+
+def first_line(command):
+    try:
+        value = subprocess.check_output(command, stderr=subprocess.STDOUT, text=True)
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return value.splitlines()[0] if value else None
+
+manifest = {
+    "sdk_format": 1,
+    "platform": platform_id,
+    "upstream": {
+        "repository": repo,
+        "commit": commit,
+        "codec2_version": version,
+    },
+    "build": {
+        "type": "Release",
+        "shared_library": True,
+        "lpcnet": False,
+        "unittest": False,
+        "cmake": first_line(["cmake", "--version"]),
+        "compiler": first_line([os.environ.get("CC", "cc"), "--version"]),
+    },
+    "host": {
+        "system": py_platform.system(),
+        "machine": py_platform.machine(),
+    },
+    "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+}
+(out / "manifest.json").write_text(
+    json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+    encoding="utf-8",
+)
+PY
+
+"$SDK_ROOT/scripts/smoke-test" "$dist_dir"
+echo "Codec2 SDK ready: $dist_dir"

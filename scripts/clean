@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/common.sh"
+rm -rf "$SDK_ROOT/build" "$SDK_ROOT/dist"
+echo "Removed build/ and dist/. Upstream checkout was kept."

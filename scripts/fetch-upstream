@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/common.sh"
+
+repo="$(lock_value repository)"
+commit="$(lock_value commit)"
+mkdir -p "$(dirname "$UPSTREAM_DIR")"
+
+if [[ ! -d "$UPSTREAM_DIR/.git" ]]; then
+    if [[ -e "$UPSTREAM_DIR" ]]; then
+        echo "refusing to overwrite non-git path: $UPSTREAM_DIR" >&2
+        exit 2
+    fi
+    git init "$UPSTREAM_DIR"
+    git -C "$UPSTREAM_DIR" remote add origin "$repo"
+fi
+
+actual_remote="$(git -C "$UPSTREAM_DIR" remote get-url origin)"
+if [[ "$actual_remote" != "$repo" ]]; then
+    echo "unexpected origin for $UPSTREAM_DIR" >&2
+    echo "expected: $repo" >&2
+    echo "actual:   $actual_remote" >&2
+    exit 2
+fi
+
+if [[ -n "$(git -C "$UPSTREAM_DIR" status --porcelain)" ]]; then
+    echo "upstream checkout contains local modifications; refusing to discard them" >&2
+    exit 2
+fi
+
+if ! git -C "$UPSTREAM_DIR" cat-file -e "${commit}^{commit}" 2>/dev/null; then
+    git -C "$UPSTREAM_DIR" fetch --depth 1 origin "$commit"
+fi
+
+git -C "$UPSTREAM_DIR" checkout --detach --force "$commit"
+actual="$(git -C "$UPSTREAM_DIR" rev-parse HEAD)"
+if [[ "$actual" != "$commit" ]]; then
+    echo "upstream SHA verification failed: expected $commit, got $actual" >&2
+    exit 2
+fi
+
+echo "Codec2 upstream ready: $actual"

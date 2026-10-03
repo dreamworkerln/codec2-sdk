@@ -1,0 +1,28 @@
+name: build
+
+"on":
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-shared:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout SDK
+        uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential cmake git python3
+      - name: Build SDK and run smoke tests
+        run: ./scripts/build
+      - name: Show manifest
+        run: cat dist/linux-x86_64/manifest.json
+      - name: Upload portable SDK tree
+        uses: actions/upload-artifact@v4
+        with:
+          name: codec2-sdk-linux-x86_64
+          path: dist/linux-x86_64/
+          if-no-files-found: error

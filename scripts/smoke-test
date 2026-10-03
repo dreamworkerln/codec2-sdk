@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "$(dirname "$0")/common.sh"
+
+if [[ $# -gt 1 ]]; then
+    echo "usage: $0 [dist-dir]" >&2
+    exit 2
+fi
+
+dist_dir="${1:-$SDK_ROOT/dist/$(platform_id)}"
+python3 "$SDK_ROOT/tests/ctypes_smoke.py" "$dist_dir"
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+python3 - "$work/input.raw" <<'PY'
+import array
+import math
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+samples = array.array("h")
+for i in range(8000):
+    samples.append(int(12000 * math.sin(2.0 * math.pi * 440.0 * i / 8000.0)))
+if sys.byteorder != "little":
+    samples.byteswap()
+path.write_bytes(samples.tobytes())
+PY
+
+"$dist_dir/bin/c2enc" 3200 "$work/input.raw" "$work/voice.c2"
+"$dist_dir/bin/c2dec" ignored "$work/voice.c2" "$work/output.raw"
+
+python3 - "$work/voice.c2" "$work/output.raw" <<'PY'
+import pathlib
+import sys
+
+encoded = pathlib.Path(sys.argv[1]).read_bytes()
+decoded = pathlib.Path(sys.argv[2]).read_bytes()
+if encoded[:3] != bytes((0xC0, 0xDE, 0xC2)):
+    raise SystemExit(".c2 file header magic mismatch")
+if len(encoded) <= 7:
+    raise SystemExit(".c2 file contains no encoded frames")
+if len(decoded) == 0 or len(decoded) % 2:
+    raise SystemExit("decoded PCM length is invalid")
+print(f"file smoke OK: {len(encoded)} encoded bytes -> {len(decoded)} PCM bytes")
+PY
